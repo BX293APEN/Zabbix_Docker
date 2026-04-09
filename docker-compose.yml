@@ -3,7 +3,7 @@ services:
   zabbix-db:
     image: mysql:${MYSQL_VERSION}
     container_name: ${DB_CONTAINER_NAME}
-    env_file: .env                                  # .env を読み込む
+    env_file: .env
 
     environment:
       MYSQL_DATABASE:       ${MYSQL_DATABASE}
@@ -29,9 +29,15 @@ services:
 
 
   zabbix-server:
-    image: zabbix/zabbix-server-mysql:${ZABBIX_VERSION}
+    build:
+      context: ${DOCKERFILE_DIR}            # .env で指定するビルドコンテキスト
+      dockerfile: ${DOCKERFILE}             # .env で指定する Dockerfile パス
+      args:
+        ZABBIX_VERSION: ${ZABBIX_VERSION}   # FROM の ARG に渡してバージョンを動的に変える
+        ENTRY_POINT:    ${ENTRY_POINT}
+    image: zabbix-server-custom:${ZABBIX_VERSION}   # ビルド後イメージ名 (キャッシュ識別用)
     container_name: ${ZABBIX_CONTAINER_NAME}
-    env_file: .env                                  # .env を読み込む
+    env_file: .env
 
     environment:
       DB_SERVER_HOST:   ${DB_SERVER_HOST}
@@ -39,24 +45,28 @@ services:
       MYSQL_DATABASE:   ${MYSQL_DATABASE}
       MYSQL_USER:       ${MYSQL_USER}
       MYSQL_PASSWORD:   ${MYSQL_PASSWORD}
+      ZBX_CREATE_SQL:   ${ZBX_CREATE_SQL}
 
     ports:
       - "${ZBX_TRAPPER_PORT}:10051"
 
     depends_on:
       zabbix-db:
-        condition: service_healthy
+        condition: service_healthy          # DB healthcheck パス後に起動
 
     volumes:
       - ./zabbix_server.conf:/etc/zabbix/zabbix_server.conf
 
     restart: unless-stopped
 
+    command:
+      - /usr/local/bin/${ENTRY_POINT}
+
 
   zabbix-web:
     image: zabbix/zabbix-web-nginx-mysql:${ZABBIX_VERSION}
     container_name: ${WEB_CONTAINER_NAME}
-    env_file: .env                                  # .env を読み込む
+    env_file: .env
 
     environment:
       DB_SERVER_HOST:   ${DB_SERVER_HOST}
