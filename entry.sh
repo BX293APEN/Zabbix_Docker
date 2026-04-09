@@ -23,9 +23,12 @@ log() { echo "[entrypoint $(date '+%H:%M:%S')] $*"; }
 : "${MYSQL_PASSWORD:?MYSQL_PASSWORD が未設定です}"
 
 # SQLファイルは .env の ZBX_CREATE_SQL で変更可能
+# コンマ区切りで複数ファイルを指定できる
+# 例(単一): ZBX_CREATE_SQL=/usr/share/doc/zabbix-server-mysql/create.sql.gz
+# 例(複数): ZBX_CREATE_SQL=schema.sql.gz,data.sql.gz,custom.sql.gz
 : "${ZBX_CREATE_SQL:=/usr/share/doc/zabbix-server-mysql/create.sql.gz}"
 MYSQL_OPTS="--ssl=false"
-MAX_WAIT=3
+MAX_WAIT=30
 
 # ---------- MySQL 起動待ち ----------
 log "MySQL (${DB_SERVER_HOST}:${DB_SERVER_PORT}) の起動を待ちます..."
@@ -61,15 +64,38 @@ TABLE_EXISTS=$(mysql ${MYSQL_OPTS} \
 if [ "${TABLE_EXISTS}" = "0" ] || [ -z "${TABLE_EXISTS}" ]; then
     log "初回起動 — DB を初期化します..."
 
-    log "SQL を適用中... (${ZBX_CREATE_SQL})"
-    zcat "${ZBX_CREATE_SQL}" | mysql ${MYSQL_OPTS} \
-        -h "${DB_SERVER_HOST}" \
-        -P "${DB_SERVER_PORT}" \
-        -u "${MYSQL_USER}" \
-        -p"${MYSQL_PASSWORD}" \
-        "${MYSQL_DATABASE}"
+    # コンマ区切りで複数の SQL ファイルを順番に適用する
+    OLD_IFS="$IFS"
+    IFS=','
+    sql_index=0
+    for sql_file in ${ZBX_CREATE_SQL}; do
+        # 前後の空白・タブを除去
+        sql_file="$(echo "${sql_file}" | tr -d ' \t')"
+        [ -z "${sql_file}" ] && continue
+        sql_index=$((sql_index + 1))
 
-    log "DB 初期化完了。"
+        if [ ! -f "${sql_file}" ]; then
+            log "ERROR: SQL ファイルが見つかりません: ${sql_file}"
+            IFS="$OLD_IFS"
+            exit 1
+        fi
+
+        log "SQL を適用中... [${sql_index}] ${sql_file}"
+        zcat "${sql_file}" | mysql ${MYSQL_OPTS} \
+            -h "${DB_SERVER_HOST}" \
+            -P "${DB_SERVER_PORT}" \
+            -u "${MYSQL_USER}" \
+            -p"${MYSQL_PASSWORD}" \
+            "${MYSQL_DATABASE}"
+    done
+    IFS="$OLD_IFS"
+
+    if [ "${sql_index}" -eq 0 ]; then
+        log "ERROR: ZBX_CREATE_SQL に有効なファイルが1件もありません。"
+        exit 1
+    fi
+
+    log "DB 初期化完了 (${sql_index} ファイル適用)。"
 else
     log "既存 DB を検出 — 初期化をスキップします。"
 fi
