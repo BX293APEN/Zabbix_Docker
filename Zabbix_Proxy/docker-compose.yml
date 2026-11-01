@@ -1,0 +1,113 @@
+# =============================================================================
+# # docker-compose.yml - Zabbix Proxy (MySQL)
+#
+# ## 構成
+#
+# | サービス | イメージ | 役割 |
+# |----------|----------|------|
+# | `zabbix-proxy-db` | `mysql` | プロキシ専用 DB (収集データのバッファ) |
+# | `zabbix-proxy`    | `zabbix/zabbix-proxy-mysql` | Zabbix Proxy 本体 |
+#
+# ## 設計メモ
+#
+# - 公式イメージの標準エントリーポイントが、初回起動時に DB スキーマを自動作成する。
+#   そのためサーバ側のようなカスタム `Dockerfile` / `entry.sh` は不要。
+# - バージョンは `.env` の `ZABBIX_VERSION` だけで決まる。
+# - `env_file` は使わず、必要な変数のみ `environment` で明示的に渡す。
+#   (`.env` 全体をコンテナへ流し込むと、無関係な変数が混入するため)
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # ## zabbix-proxy-db
+  #
+  # | `command` オプション | 説明 |
+  # |----------------------|------|
+  # | `--character-set-server=utf8mb4` | 文字コード |
+  # | `--collation-server=utf8mb4_bin` | Zabbix 推奨の照合順序 |
+  # | `--max_allowed_packet=64M`       | 大きなパケットを許可 |
+  # | `--skip-log-bin`                 | バイナリログを無効化 (ディスク肥大化の防止) |
+  #
+  # ### healthcheck について
+  #
+  # `-h 127.0.0.1` は **意図的な指定**。`localhost` だとソケット経由になり、
+  # MySQL の初回初期化中に立ち上がる一時サーバでも ping が成功してしまう。
+  # TCP 経由にすることで、初期化が完全に終わってから healthy になる。
+  # ---------------------------------------------------------------------------
+  zabbix-proxy-db:
+    image: mysql:${MYSQL_VERSION}
+    container_name: ${DB_CONTAINER_NAME}
+
+    environment:
+      MYSQL_DATABASE:       ${MYSQL_DATABASE}
+      MYSQL_USER:           ${MYSQL_USER}
+      MYSQL_PASSWORD:       ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD:  ${MYSQL_ROOT_PASSWORD}
+
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_bin
+      - --max_allowed_packet=64M
+      - --skip-log-bin
+
+    volumes:
+      - ./zabbix-proxy-db:/var/lib/mysql
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+
+  # ---------------------------------------------------------------------------
+  # ## zabbix-proxy
+  #
+  # | 環境変数 | 対応する zabbix_proxy.conf のパラメータ |
+  # |----------|----------------------------------------|
+  # | `ZBX_PROXYMODE`          | `ProxyMode` |
+  # | `ZBX_HOSTNAME`           | `Hostname` |
+  # | `ZBX_SERVER_HOST`        | `Server` |
+  # | `ZBX_PROXYOFFLINEBUFFER` | `ProxyOfflineBuffer` |
+  # | `ZBX_PROXYLOCALBUFFER`   | `ProxyLocalBuffer` |
+  # | `ZBX_DEBUGLEVEL`         | `DebugLevel` |
+  # | `DB_SERVER_HOST` / `DB_SERVER_PORT` | `DBHost` / `DBPort` |
+  # | `MYSQL_DATABASE` / `MYSQL_USER` / `MYSQL_PASSWORD` | `DBName` / `DBUser` / `DBPassword` |
+  #
+  # ### ポート公開について
+  #
+  # アクティブモードでは受信ポートは不要だが、パッシブモードへ切り替えても
+  # compose を編集しなくて済むよう、常に公開している。
+  # ---------------------------------------------------------------------------
+  zabbix-proxy:
+    image: zabbix/zabbix-proxy-mysql:${ZABBIX_VERSION}
+    container_name: ${PROXY_CONTAINER_NAME}
+
+    # 公式の推奨 (`docker run --init` 相当)。ゾンビプロセスの回収用。
+    init: true
+
+    environment:
+      ZBX_PROXYMODE:          ${ZBX_PROXYMODE}
+      ZBX_HOSTNAME:           ${ZBX_HOSTNAME}
+      ZBX_SERVER_HOST:        ${ZBX_SERVER_HOST:?.env に ZBX_SERVER_HOST (サーバのアドレス:ポート) を設定してください}
+      ZBX_PROXYOFFLINEBUFFER: ${ZBX_PROXYOFFLINEBUFFER}
+      ZBX_PROXYLOCALBUFFER:   ${ZBX_PROXYLOCALBUFFER}
+      ZBX_DEBUGLEVEL:         ${ZBX_DEBUGLEVEL}
+      DB_SERVER_HOST:         ${DB_SERVER_HOST}
+      DB_SERVER_PORT:         ${DB_SERVER_PORT}
+      MYSQL_DATABASE:         ${MYSQL_DATABASE}
+      MYSQL_USER:             ${MYSQL_USER}
+      MYSQL_PASSWORD:         ${MYSQL_PASSWORD}
+
+    ports:
+      - "${ZBX_PROXY_PORT}:10051"
+
+    depends_on:
+      zabbix-proxy-db:
+        condition: service_healthy          # DB healthcheck パス後に起動
+
+    restart: unless-stopped

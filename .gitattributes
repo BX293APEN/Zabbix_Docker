@@ -1,0 +1,13 @@
+# =============================================================================
+# # .gitattributes
+#
+# Windows の autocrlf で `entry.sh` 等が CRLF になると、コンテナ内で
+# `exec ... no such file or directory` となり起動できない。
+# 改行コードを LF に固定して防ぐ。
+# =============================================================================
+* text=auto eol=lf
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf
+*.conf      text eol=lf
+.env        text eol=lf
